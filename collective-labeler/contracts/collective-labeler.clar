@@ -347,3 +347,90 @@
         (ok new-submission-id)
     )
 )
+
+;; Function 14: Enhanced payment with stats update
+(define-public (verify-and-pay-v2 (submission-id uint))
+    (let
+        ((submission (unwrap! (map-get? submissions submission-id) err-not-found))
+         (task (unwrap! (map-get? tasks (get task-id submission)) err-not-found))
+         (is-task-completed (is-eq (+ (get completed-items task) u1) (get total-items task))))
+        (asserts! (is-eq tx-sender (get creator task)) err-not-authorized)
+        (asserts! (not (get paid submission)) err-already-submitted)
+        (try! (as-contract (stx-transfer? (get reward-per-item task) tx-sender (get labeler submission))))
+        (map-set submissions submission-id 
+            (merge submission {verified: true, paid: true}))
+        (map-set tasks (get task-id submission)
+            (merge task {
+                completed-items: (+ (get completed-items task) u1),
+                active: (not is-task-completed)
+            }))
+        (update-labeler-stats (get labeler submission) (get reward-per-item task))
+        (if is-task-completed
+            (var-set total-tasks-completed (+ (var-get total-tasks-completed) u1))
+            true)
+        (ok true)
+    )
+)
+
+;; Function 15: Batch verify multiple submissions
+(define-public (batch-verify-submissions (submission-ids (list 10 uint)))
+    (ok (map verify-single-submission submission-ids))
+)
+
+;; Helper for batch verification
+(define-private (verify-single-submission (submission-id uint))
+    (match (verify-and-pay-v2 submission-id)
+        success true
+        error false
+    )
+)
+
+;; Function 16: Get task category
+(define-read-only (get-task-category (task-id uint))
+    (ok (map-get? task-categories task-id))
+)
+
+;; Function 17: Check if task is complete
+(define-read-only (is-task-complete (task-id uint))
+    (let
+        ((task (unwrap! (map-get? tasks task-id) err-not-found)))
+        (ok (is-eq (get completed-items task) (get total-items task)))
+    )
+)
+
+;; Function 18: Get labeler success rate
+(define-read-only (get-labeler-success-rate (labeler principal))
+    (let
+        ((stats (default-to 
+            {total-submissions: u0, verified-submissions: u0, total-earned: u0, tasks-participated: u0}
+            (map-get? labeler-stats labeler))))
+        (ok (if (> (get total-submissions stats) u0)
+            (/ (* (get verified-submissions stats) u100) (get total-submissions stats))
+            u0
+        ))
+    )
+)
+
+;; Function 19: Get all submissions for a task by labeler
+(define-read-only (get-task-labeler-info (task-id uint) (labeler principal))
+    (let
+        ((task (unwrap! (map-get? tasks task-id) err-not-found))
+         (submission-count (get-labeler-submission-count task-id labeler)))
+        (ok {
+            task-active: (get active task),
+            submissions: submission-count,
+            potential-earnings: (* submission-count (get reward-per-item task))
+        })
+    )
+)
+
+;; Function 20: Withdraw platform fees (owner only)
+(define-public (withdraw-platform-fees (amount uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (<= amount (var-get total-platform-fees)) err-insufficient-funds)
+        (try! (as-contract (stx-transfer? amount tx-sender contract-owner)))
+        (var-set total-platform-fees (- (var-get total-platform-fees) amount))
+        (ok true)
+    )
+)
