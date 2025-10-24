@@ -241,3 +241,109 @@
 (define-read-only (calculate-platform-fee (reward-amount uint))
     (ok (/ (* reward-amount (var-get platform-fee-percentage)) u100))
 )
+
+;; Function 9: Enhanced task creation with fee
+;; #[allow(unchecked_data)]
+(define-public (create-task-v2 (description (string-ascii 500)) (reward-per-item uint) (total-items uint) (category (string-ascii 50)))
+    (let
+        ((new-id (var-get task-id-nonce))
+         (escrow-amount (* reward-per-item total-items))
+         (platform-fee (/ (* escrow-amount (var-get platform-fee-percentage)) u100))
+         (total-cost (+ escrow-amount platform-fee)))
+        (asserts! (>= reward-per-item (var-get min-reward-per-item)) err-insufficient-funds)
+        (asserts! (> total-items u0) err-insufficient-funds)
+        (try! (stx-transfer? total-cost tx-sender (as-contract tx-sender)))
+        (map-set tasks new-id
+            {
+                creator: tx-sender,
+                description: description,
+                reward-per-item: reward-per-item,
+                total-items: total-items,
+                completed-items: u0,
+                escrow-amount: escrow-amount,
+                active: true
+            }
+        )
+        (map-set task-categories new-id category)
+        (var-set total-platform-fees (+ (var-get total-platform-fees) platform-fee))
+        (var-set task-id-nonce (+ new-id u1))
+        (ok new-id)
+    )
+)
+
+;; Function 10: Submit review for task
+;; #[allow(unchecked_data)]
+(define-public (submit-task-review (task-id uint) (rating uint) (comment (string-ascii 200)))
+    (let
+        ((task (unwrap! (map-get? tasks task-id) err-not-found))
+         (submission-count (get-labeler-submission-count task-id tx-sender)))
+        (asserts! (> submission-count u0) err-not-authorized)
+        (asserts! (<= rating u5) err-not-authorized) ;; Max 5 stars
+        (map-set task-reviews 
+            {task-id: task-id, labeler: tx-sender}
+            {rating: rating, comment: comment})
+        (ok true)
+    )
+)
+
+;; Function 11: Get task review
+(define-read-only (get-task-review (task-id uint) (labeler principal))
+    (ok (map-get? task-reviews {task-id: task-id, labeler: labeler}))
+)
+
+;; Function 12: Update labeler stats after verification
+(define-private (update-labeler-stats (labeler principal) (reward uint))
+    (let
+        ((current-stats (default-to 
+            {total-submissions: u0, verified-submissions: u0, total-earned: u0, tasks-participated: u0}
+            (map-get? labeler-stats labeler))))
+        (map-set labeler-stats labeler
+            {
+                total-submissions: (get total-submissions current-stats),
+                verified-submissions: (+ (get verified-submissions current-stats) u1),
+                total-earned: (+ (get total-earned current-stats) reward),
+                tasks-participated: (get tasks-participated current-stats)
+            })
+        true
+    )
+)
+
+;; Function 13: Enhanced submission with stats tracking
+;; #[allow(unchecked_data)]
+(define-public (submit-annotation-v2 (task-id uint) (data-hash (buff 32)))
+    (let
+        ((task (unwrap! (map-get? tasks task-id) err-not-found))
+         (new-submission-id (var-get submission-id-nonce))
+         (current-stats (default-to 
+            {total-submissions: u0, verified-submissions: u0, total-earned: u0, tasks-participated: u0}
+            (map-get? labeler-stats tx-sender)))
+         (is-first-submission (is-eq (get-labeler-submission-count task-id tx-sender) u0)))
+        (asserts! (get active task) err-task-closed)
+        (asserts! (< (get completed-items task) (get total-items task)) err-task-closed)
+        (map-set submissions new-submission-id
+            {
+                task-id: task-id,
+                labeler: tx-sender,
+                data-hash: data-hash,
+                verified: false,
+                paid: false,
+                timestamp: stacks-block-height
+            }
+        )
+        (map-set labeler-submissions 
+            {task-id: task-id, labeler: tx-sender}
+            (+ (get-labeler-submission-count task-id tx-sender) u1)
+        )
+        (map-set labeler-stats tx-sender
+            {
+                total-submissions: (+ (get total-submissions current-stats) u1),
+                verified-submissions: (get verified-submissions current-stats),
+                total-earned: (get total-earned current-stats),
+                tasks-participated: (if is-first-submission 
+                    (+ (get tasks-participated current-stats) u1)
+                    (get tasks-participated current-stats))
+            })
+        (var-set submission-id-nonce (+ new-submission-id u1))
+        (ok new-submission-id)
+    )
+)
