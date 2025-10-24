@@ -140,3 +140,104 @@
         (ok true)
     )
 )
+
+;; Additional Data Variables
+(define-data-var platform-fee-percentage uint u2) ;; 2% platform fee
+(define-data-var min-reward-per-item uint u10000) ;; Minimum 0.01 STX
+(define-data-var total-tasks-completed uint u0)
+(define-data-var total-platform-fees uint u0)
+
+;; Additional Data Maps
+(define-map labeler-stats
+    principal
+    {
+        total-submissions: uint,
+        verified-submissions: uint,
+        total-earned: uint,
+        tasks-participated: uint
+    }
+)
+
+(define-map task-reviews
+    {task-id: uint, labeler: principal}
+    {
+        rating: uint,
+        comment: (string-ascii 200)
+    }
+)
+
+(define-map labeler-reputation
+    principal
+    uint
+)
+
+(define-map task-categories
+    uint
+    (string-ascii 50)
+)
+
+;; Function 1: Get labeler statistics
+(define-read-only (get-labeler-stats (labeler principal))
+    (ok (default-to 
+        {total-submissions: u0, verified-submissions: u0, total-earned: u0, tasks-participated: u0}
+        (map-get? labeler-stats labeler)))
+)
+
+;; Function 2: Get labeler reputation score
+(define-read-only (get-labeler-reputation (labeler principal))
+    (ok (default-to u0 (map-get? labeler-reputation labeler)))
+)
+
+;; Function 3: Calculate task completion percentage
+(define-read-only (get-task-completion-rate (task-id uint))
+    (let
+        ((task (unwrap! (map-get? tasks task-id) err-not-found)))
+        (ok (if (> (get total-items task) u0)
+            (/ (* (get completed-items task) u100) (get total-items task))
+            u0
+        ))
+    )
+)
+
+;; Function 4: Get task remaining items
+(define-read-only (get-remaining-items (task-id uint))
+    (let
+        ((task (unwrap! (map-get? tasks task-id) err-not-found)))
+        (ok (- (get total-items task) (get completed-items task)))
+    )
+)
+
+;; Function 5: Get platform statistics
+(define-read-only (get-platform-stats)
+    (ok {
+        total-tasks: (var-get task-id-nonce),
+        total-submissions: (var-get submission-id-nonce),
+        completed-tasks: (var-get total-tasks-completed),
+        platform-fees-collected: (var-get total-platform-fees)
+    })
+)
+
+;; Function 6: Set minimum reward (owner only)
+;; #[allow(unchecked_data)]
+(define-public (set-min-reward (new-min uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (var-set min-reward-per-item new-min)
+        (ok true)
+    )
+)
+
+;; Function 7: Set platform fee (owner only)
+(define-public (set-platform-fee (new-fee uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (<= new-fee u10) err-not-authorized) ;; Max 10% fee
+        (var-set platform-fee-percentage new-fee)
+        (ok true)
+    )
+)
+
+;; Function 8: Calculate platform fee for task
+(define-read-only (calculate-platform-fee (reward-amount uint))
+    (ok (/ (* reward-amount (var-get platform-fee-percentage)) u100))
+)
